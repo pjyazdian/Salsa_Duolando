@@ -13,6 +13,9 @@ import yaml
 import numpy as np
 import torch
 import gradio as gr
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 try:
     from easydict import EasyDict
@@ -196,6 +199,169 @@ def _run_single_inference(agent, batch):
     return pose_sample[0], pose_seql[0]  # (T, 165) each
 
 
+def _postprocess_decoded_pose(pose_np, transll):
+    """Convert decoded (root-zeroed) pose to display format: add root, unscale hands. pose_np: (1, T, 165), transll: (1, T, 3)."""
+    T_dec = pose_np.shape[1]
+    T_root = transll.shape[1]
+    T = min(T_dec, T_root)
+    pose = pose_np[:, :T, :].copy()
+    root = transll[:, :T, :].clone().detach().cpu().numpy()
+    pose[:, :, :3] = root
+    left_twist = pose[:, :, 60:63]
+    pose[:, :, 75:120] = pose[:, :, 75:120] * 0.1 + np.tile(left_twist, (1, 1, 15))
+    right_twist = pose[:, :, 63:66]
+    pose[:, :, 120:165] = pose[:, :, 120:165] * 0.1 + np.tile(right_twist, (1, 1, 15))
+    root = pose[:, :, :3].copy()
+    pose = pose + np.tile(root, (1, 1, 55))
+    pose[:, :, :3] = root
+    return pose[0]  # (T, 165)
+
+
+def _format_quants_for_display(quants_pose, name):
+    """Format pose quants (tuple of 4 lists of tensors) for display."""
+    parts = ["up", "down", "lhand", "rhand"]
+    lines = [f"**{name}** (4 codebooks):"]
+    for i, part in enumerate(parts):
+        z = quants_pose[i]
+        if isinstance(z, (list, tuple)):
+            z = z[0]
+        z = z.detach().cpu().numpy()
+        shape = z.shape
+        flat = z.flatten()
+        n = len(flat)
+        head = flat[:12].tolist() if n >= 12 else flat.tolist()
+        tail = flat[-8:].tolist() if n > 20 else []
+        tok_str = str(head) + (" ... " + str(tail) if tail else "")
+        lines.append(f"  {part}: shape {shape}, num_tokens={n}, first/last → {tok_str}")
+    return "\n".join(lines)
+
+
+def _format_transl_quants_for_display(quants_transl):
+    """Format translation quants (list of tensors) for display."""
+    z = quants_transl[0]
+    z = z.detach().cpu().numpy()
+    shape = z.shape
+    flat = z.flatten()
+    n = len(flat)
+    head = flat[:12].tolist() if n >= 12 else flat.tolist()
+    tail = flat[-8:].tolist() if n > 20 else []
+    tok_str = str(head) + (" ... " + str(tail) if tail else "")
+    return f"**Translation (relation)** (1 codebook): shape {shape}, num_tokens={n}, first/last → {tok_str}"
+
+
+def _get_vqvae_model_info():
+    """Build a short model info string from config (pose + translation VQ-VAEs)."""
+    if _config is None:
+        _load_config()
+    c = _config
+    pose_c = getattr(c, "structure", None)
+    pose_l_bins = getattr(pose_c, "l_bins", 512) if pose_c else 512
+    pose_emb = getattr(getattr(pose_c, "up_half", None), "emb_width", 512) if pose_c else 512
+    pose_downs = getattr(getattr(pose_c, "up_half", None), "downs_t", [2]) if pose_c else [2]
+    trans_c = getattr(c, "structure_transl_vqvae", None)
+    trans_l_bins = getattr(trans_c, "l_bins", 512) if trans_c else 512
+    trans_emb = getattr(trans_c, "emb_width", 512) if trans_c else 512
+    trans_input = getattr(trans_c, "input_dim", 3) if trans_c else 3
+    trans_downs = getattr(trans_c, "downs_t", [2]) if trans_c else [2]
+    lines = [
+        "**Pose VQ-VAE** (SepVQVAEXM)",
+        "- Codebooks: 4 (up, down, lhand, rhand)",
+        f"- Vocab size (l_bins): {pose_l_bins}",
+        f"- Embed dim (emb_width): {pose_emb}",
+        f"- Temporal downsample: downs_t = {pose_downs}",
+        "",
+        "**Translation VQ-VAE** (relation)",
+        "- Codebooks: 1",
+        f"- Vocab size (l_bins): {trans_l_bins}",
+        f"- Embed dim (emb_width): {trans_emb}",
+        f"- Input dim: {trans_input} (relative x, y, z)",
+        f"- Temporal downsample: downs_t = {trans_downs}",
+    ]
+    return "\n".join(lines)
+
+
+def _run_vqvae_reconstruction(agent, batch):
+    """
+    Run full VQ-VAE pipeline (pose + translation) so everything is from tokens, like at inference.
+    Returns (recon_leader, recon_follower, gt_transl, recon_transl, tokens_text).
+    - gt_transl, recon_transl: (T, 3) in world units (follower root - leader root) for charting.
+    - tokens_text: string describing the extracted tokens used for reconstruction.
+    """
+    config = agent.config
+    device = agent.device
+    vqvae = agent.model
+    transl_vqvae = agent.model3
+
+    pose_seql = batch["pos3dl"].to(device)
+    pose_seqf = batch["pos3df"].to(device)
+
+    # Relation: relative translation (follower - leader) * 20, before zeroing roots
+    lftransl_gt = (pose_seqf[:, :, :3] - pose_seql[:, :, :3]).clone() * 20.0
+
+    transll = pose_seql[:, :, :3].clone()
+    transll = transll - transll[:, :1, :3].clone()
+
+    pose_seql[:, :, :3] = 0
+    pose_seqf[:, :, :3] = 0
+
+    # Pose VQ-VAE: tokenize + detokenize both bodies
+    quants_l = vqvae.module.encode(pose_seql)
+    quants_f = vqvae.module.encode(pose_seqf)
+    recon_l, _, _ = vqvae.module.decode(quants_l)
+    recon_f, _, _ = vqvae.module.decode(quants_f)
+
+    # Translation VQ-VAE: tokenize + detokenize relative translation (relation)
+    quants_transl = transl_vqvae.module.encode(lftransl_gt)
+    lf_transl_recon = transl_vqvae.module.decode(quants_transl)
+
+    # Build tokens display (before moving to numpy for postprocess)
+    tokens_parts = [
+        "**Tokens used for this reconstruction:**",
+        "",
+        _format_quants_for_display(quants_l, "Leader pose"),
+        "",
+        _format_quants_for_display(quants_f, "Follower pose"),
+        "",
+        _format_transl_quants_for_display(quants_transl),
+    ]
+    tokens_text = "\n".join(tokens_parts)
+
+    recon_l = recon_l.cpu().data.numpy()
+    recon_f = recon_f.cpu().data.numpy()
+    lf_transl_recon = lf_transl_recon.cpu()
+    transll_np = transll.cpu()
+
+    T = min(recon_l.shape[1], recon_f.shape[1], transll_np.shape[1], lf_transl_recon.shape[1])
+    transll_T = transll_np[:, :T, :]
+    # Follower root from tokens: leader_root + decoded_relative_translation (same as inference)
+    translf_recon = transll_T + lf_transl_recon[:, :T, :] / 20.0
+
+    recon_leader = _postprocess_decoded_pose(recon_l[:, :T, :], transll_T)
+    recon_follower = _postprocess_decoded_pose(recon_f[:, :T, :], translf_recon)
+
+    gt_transl = (lftransl_gt[:, :T, :] / 20.0).detach().cpu().numpy()[0]
+    recon_transl = (lf_transl_recon[:, :T, :] / 20.0).detach().cpu().numpy()[0]
+    return recon_leader, recon_follower, gt_transl, recon_transl, tokens_text
+
+
+def _plot_translation_gt_vs_recon(gt_transl, recon_transl):
+    """Plot ground truth vs reconstructed relative translation (follower - leader root) for x, y, z."""
+    T = gt_transl.shape[0]
+    frames = np.arange(T)
+    fig, axes = plt.subplots(3, 1, sharex=True, figsize=(8, 6))
+    labels = ["X", "Y", "Z"]
+    for i, ax in enumerate(axes):
+        ax.plot(frames, gt_transl[:, i], label="Ground truth", color="C0", alpha=0.8)
+        ax.plot(frames, recon_transl[:, i], label="VQ-VAE recon", color="C1", alpha=0.8, linestyle="--")
+        ax.set_ylabel(labels[i])
+        ax.legend(loc="upper right", fontsize=8)
+        ax.grid(True, alpha=0.3)
+    axes[-1].set_xlabel("Frame")
+    fig.suptitle("Relative translation (follower − leader root)", fontsize=10)
+    plt.tight_layout()
+    return fig
+
+
 # --------------- State and paths ---------------
 DATA_ROOT = os.path.join(_REPO_ROOT, "data", "motion")
 MUSIC_ROOT = os.path.join(_REPO_ROOT, "data", "music")
@@ -262,6 +428,46 @@ def visualize_ground_truth(sample_name, progress=gr.Progress()):
         return None, None, f"Error: {e}\n{traceback.format_exc()}"
 
 
+def visualize_vqvae_reconstruction(sample_name, progress=gr.Progress()):
+    """Encode selected sample through pose + translation VQ-VAEs (tokenize + detokenize) and visualize reconstruction."""
+    if _dataset is None:
+        return None, None, None, None, "Load and index data first (click 'Load and index data')."
+    if not sample_name or sample_name not in _sample_names:
+        return None, None, None, None, "Please select a sample from the dropdown."
+    try:
+        idx = _sample_names.index(sample_name)
+        progress(0.1, desc="Loading model...")
+        agent = _get_agent()
+        progress(0.3, desc="Loading sample...")
+        item = _dataset[idx]
+        batch = {
+            "pos3dl": torch.from_numpy(item["pos3dl"].astype(np.float32)).unsqueeze(0),
+            "pos3df": torch.from_numpy(item["pos3df"].astype(np.float32)).unsqueeze(0),
+        }
+        progress(0.45, desc="Pose + translation VQ-VAE encode + decode...")
+        recon_leader, recon_follower, gt_transl, recon_transl, tokens_text = _run_vqvae_reconstruction(agent, batch)
+        progress(0.7, desc="Rendering video...")
+        out_path = pos3d_to_video(
+            recon_follower,
+            recon_leader,
+            fps=30,
+            width=_width,
+            height=_height,
+            output_path=os.path.join(tempfile.gettempdir(), f"duolando_vqvae_recon_{sample_name.replace('/', '_')}.mp4"),
+        )
+        progress(0.85, desc="Building relation chart...")
+        fig = _plot_translation_gt_vs_recon(gt_transl, recon_transl)
+        music_path = get_music_path_for_sample(MUSIC_SOURCE, sample_name)
+        if not os.path.isfile(music_path):
+            music_path = None
+        progress(1.0, desc="Done")
+        msg = "Full VQ-VAE reconstruction (pose + translation) ready. Video uses decoded pose and decoded relative translation; chart compares GT vs reconstructed relation."
+        return out_path, music_path, fig, tokens_text, msg
+    except Exception as e:
+        import traceback
+        return None, None, None, None, f"Error: {e}\n{traceback.format_exc()}"
+
+
 def run_inference(sample_name, progress=gr.Progress()):
     """Run both Follower GPT and Follower GPT w. RL on the selected sample; return both videos + audio."""
     if _dataset is None:
@@ -322,6 +528,7 @@ def run_inference(sample_name, progress=gr.Progress()):
 
 
 def build_ui():
+    _load_config()  # so model info is available for VQ-VAE tab
     with gr.Blocks(title="Duolando – Data & Inference", theme=gr.themes.Soft(primary_hue="orange", secondary_hue="orange")) as app:
         gr.Markdown("# Duolando – Data visualization & inference")
         gr.Markdown("Load DD100 data, pick a sample, then use **Ground truth** or **Inference** to visualize.")
@@ -349,6 +556,28 @@ def build_ui():
                     fn=visualize_ground_truth,
                     inputs=[sample_dropdown],
                     outputs=[gt_video, gt_audio, gt_status],
+                )
+
+            with gr.Tab("VQ-VAE Reconstruction"):
+                gr.Markdown(
+                    "Encode the selected sample through **pose VQ-VAE** and **translation VQ-VAE** (tokenize → detokenize), same as at inference. "
+                    "Both body and relative translation (follower − leader root) are reconstructed from tokens. "
+                    "Chart below: ground truth vs reconstructed relation (X, Y, Z over time)."
+                )
+                with gr.Accordion("VQ-VAE model details", open=True):
+                    vqvae_model_info = gr.Markdown(value=_get_vqvae_model_info(), label="Model info")
+                vqvae_btn = gr.Button("Reconstruct", variant="secondary")
+                vqvae_status = gr.Textbox(label="Status", interactive=False)
+                with gr.Row():
+                    vqvae_video = gr.Video(label="VQ-VAE reconstruction")
+                    vqvae_audio = gr.Audio(label="Song", type="filepath")
+                vqvae_plot = gr.Plot(label="Relative translation: Ground truth vs Reconstructed")
+                with gr.Accordion("Tokens used for this reconstruction", open=True):
+                    vqvae_tokens = gr.Markdown(value="Run **Reconstruct** to see the discrete tokens (leader pose, follower pose, translation) extracted for this sample.", label="Tokens")
+                vqvae_btn.click(
+                    fn=visualize_vqvae_reconstruction,
+                    inputs=[sample_dropdown],
+                    outputs=[vqvae_video, vqvae_audio, vqvae_plot, vqvae_tokens, vqvae_status],
                 )
 
             with gr.Tab("Inference"):
