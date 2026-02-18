@@ -232,3 +232,15 @@ def get_music_path_for_sample(music_source_dir, sample_name):
         mp3 = sample_name.split("_")[1]
         music_name = os.path.join(music_source_dir, folder, mp3[:-2] + "0" + mp3[-2:] + ".mp3")
     return music_name
+
+
+def get_salsa_music_path(music_mp3_dir, sample_name):
+    """
+    Resolve music path for Salsa cache (DD100-like layout: music/mp3/test/{take}.mp3 or .wav).
+    Returns path to .mp3 if it exists, else .wav, else None.
+    """
+    for ext in (".mp3", ".wav"):
+        path = os.path.join(music_mp3_dir, sample_name + ext)
+        if os.path.isfile(path):
+            return path
+    return None

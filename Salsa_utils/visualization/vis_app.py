@@ -43,6 +43,7 @@ from visualization_utils import (
     pos3d_to_video,
     pos3d_to_video_gt_vs_recon,
     get_music_path_for_sample,
+    get_salsa_music_path,
     dataset_pos3d_to_display_pos3d,
 )
 
@@ -371,9 +372,15 @@ def _plot_translation_gt_vs_recon(gt_transl, recon_transl):
 DATA_ROOT = os.path.join(_REPO_ROOT, "data", "motion")
 MUSIC_ROOT = os.path.join(_REPO_ROOT, "data", "music")
 MUSIC_SOURCE = os.path.join(_REPO_ROOT, "data", "music", "mp3", "test")
+# Salsa cache (built by Salsa_utils.salsa_duolando_cache); use env or default under data/salsa_duolando
+SALSA_CACHE_ROOT = os.environ.get("SALSA_DUOLANDO_CACHE", os.path.join(_REPO_ROOT, "data", "salsa_duolando"))
+SALSA_MOTION_ROOT = os.path.join(SALSA_CACHE_ROOT, "motion")
+SALSA_MUSIC_ROOT = os.path.join(SALSA_CACHE_ROOT, "music")
+SALSA_MUSIC_MP3 = os.path.join(SALSA_CACHE_ROOT, "music", "mp3", "test")
 
 _dataset = None
 _sample_names = []
+_use_salsa_dataset = False
 _width = 960
 _height = 540
 
@@ -386,14 +393,35 @@ TOKENS_TO_POSE_EXPLANATION = """
 """
 
 
-def load_and_index_data(progress=gr.Progress()):
-    """Load DD100 test set and fill sample list. Returns dropdown choices and status."""
-    global _dataset, _sample_names
+def load_and_index_data(dataset_choice, progress=gr.Progress()):
+    """Load dataset (DD100 or Salsa cache) and fill sample list. Returns dropdown choices and status."""
+    global _dataset, _sample_names, _use_salsa_dataset
+    use_salsa = (dataset_choice == "Salsa")
+    _use_salsa_dataset = use_salsa
+    music_root = SALSA_MUSIC_ROOT if use_salsa else MUSIC_ROOT
+    motion_root = SALSA_MOTION_ROOT if use_salsa else DATA_ROOT
     try:
         progress(0.1, desc="Loading dataset...")
+        if use_salsa:
+            # Diagnose Salsa paths so user can fix cache location
+            pos3d_dir = os.path.join(motion_root, "pos3d", "test")
+            feature_dir = os.path.join(music_root, "feature", "test")
+            pos3d_exists = os.path.isdir(pos3d_dir)
+            feature_exists = os.path.isdir(feature_dir)
+            n_pos3d = len([f for f in os.listdir(pos3d_dir) if f.endswith(".npy")]) if pos3d_exists else 0
+            n_feature = len([f for f in os.listdir(feature_dir) if f.endswith(".npy")]) if feature_exists else 0
+            if not pos3d_exists or not feature_exists or n_pos3d == 0 or n_feature == 0:
+                msg = (
+                    f"No samples found. Salsa cache paths (split=test):\n"
+                    f"  motion/pos3d: {pos3d_dir}\n  exists={pos3d_exists}, npy files={n_pos3d}\n"
+                    f"  music/feature: {feature_dir}\n  exists={feature_exists}, npy files={n_feature}\n"
+                    f"Build cache: python -m Salsa_utils.salsa_duolando_cache --source_lmdb <path> --out_dir {os.path.dirname(motion_root)} --split test\n"
+                    f"Or set SALSA_DUOLANDO_CACHE to the cache root (folder containing motion/ and music/)."
+                )
+                return gr.update(choices=[], value=None), msg
         _dataset = DD100lfAll(
-            MUSIC_ROOT,
-            DATA_ROOT,
+            music_root,
+            motion_root,
             split="test",
             interval=None,
             dtype="pos3d",
@@ -403,10 +431,12 @@ def load_and_index_data(progress=gr.Progress()):
         _sample_names = list(_dataset.names)
         progress(1.0, desc="Done")
         if not _sample_names:
-            return gr.update(choices=[], value=None), "No samples found in test set. Check data/motion/pos3d/test and data/music/feature/test."
-        return gr.update(choices=_sample_names, value=_sample_names[0]), f"Loaded {len(_sample_names)} samples. Pick a sample above and use the tabs below."
+            hint = "Salsa: run Salsa_utils.salsa_duolando_cache and set split=test, or check SALSA_DUOLANDO_CACHE." if use_salsa else "Check data/motion/pos3d/test and data/music/feature/test."
+            return gr.update(choices=[], value=None), f"No samples found. {hint}"
+        return gr.update(choices=_sample_names, value=_sample_names[0]), f"Loaded {len(_sample_names)} samples ({dataset_choice}). Pick a sample above."
     except Exception as e:
-        return gr.update(choices=[], value=None), f"Error loading data: {e}"
+        import traceback
+        return gr.update(choices=[], value=None), f"Error loading data: {e}\n{traceback.format_exc()}"
 
 
 def visualize_ground_truth(sample_name, progress=gr.Progress()):
@@ -431,9 +461,12 @@ def visualize_ground_truth(sample_name, progress=gr.Progress()):
             height=_height,
             output_path=os.path.join(tempfile.gettempdir(), f"duolando_gt_{sample_name.replace('/', '_')}.mp4"),
         )
-        music_path = get_music_path_for_sample(MUSIC_SOURCE, sample_name)
-        if not os.path.isfile(music_path):
-            music_path = None
+        if _use_salsa_dataset:
+            music_path = get_salsa_music_path(SALSA_MUSIC_MP3, sample_name)
+        else:
+            music_path = get_music_path_for_sample(MUSIC_SOURCE, sample_name)
+            if not os.path.isfile(music_path):
+                music_path = None
         progress(1.0, desc="Done")
         return out_path, music_path, "Ground truth visualization ready. Play video and audio below."
     except Exception as e:
@@ -484,15 +517,37 @@ def visualize_vqvae_reconstruction(sample_name, progress=gr.Progress()):
         )
         progress(0.85, desc="Building relation chart...")
         fig = _plot_translation_gt_vs_recon(gt_transl, recon_transl)
-        music_path = get_music_path_for_sample(MUSIC_SOURCE, sample_name)
-        if not os.path.isfile(music_path):
-            music_path = None
+        if _use_salsa_dataset:
+            music_path = get_salsa_music_path(SALSA_MUSIC_MP3, sample_name)
+        else:
+            music_path = get_music_path_for_sample(MUSIC_SOURCE, sample_name)
+            if not os.path.isfile(music_path):
+                music_path = None
         progress(1.0, desc="Done")
         msg = "Full VQ-VAE reconstruction ready. First video: recon only. Second: GT (shadow) vs recon (solid). Chart: relation GT vs recon."
         return out_path, overlay_path, music_path, fig, tokens_text, msg
     except Exception as e:
         import traceback
         return None, None, None, None, None, f"Error: {e}\n{traceback.format_exc()}"
+
+
+def _ensure_music_54(music: np.ndarray, n_music: int = 54) -> np.ndarray:
+    """
+    Ensure music has shape (T, 54) for GPT cond_emb. Uses Duolando's exact feature dims only.
+    If the array is transposed (54, T), transpose to (T, 54). If dim is not 54, raise.
+    """
+    music = np.asarray(music, dtype=np.float32)
+    if music.ndim == 1:
+        music = music.reshape(-1, 1)
+    if music.shape[0] == n_music and music.shape[1] != n_music:
+        music = music.T
+    if music.shape[-1] != n_music:
+        raise ValueError(
+            f"Music feature must have exactly 54 dimensions (same as Duolando: mfcc+mfcc_delta+chroma_cqt+onset_env+onset_beat). "
+            f"Got shape {music.shape}. Rebuild the Salsa cache with Duolando's pipeline: run salsa_duolando_cache from the Duolando repo so "
+            f"_prepare_music_data.signal_to_feature and extractor.py are used (same as DD100)."
+        )
+    return music
 
 
 def run_inference(sample_name, progress=gr.Progress()):
@@ -507,8 +562,9 @@ def run_inference(sample_name, progress=gr.Progress()):
         item = _dataset[idx]
         gt_follower = dataset_pos3d_to_display_pos3d(item["pos3df"])
         gt_leader = dataset_pos3d_to_display_pos3d(item["pos3dl"])
+        music = _ensure_music_54(item["music"])
         batch = {
-            "music": torch.from_numpy(item["music"].astype(np.float32)).unsqueeze(0),
+            "music": torch.from_numpy(music).unsqueeze(0),
             "pos3dl": torch.from_numpy(item["pos3dl"].astype(np.float32)).unsqueeze(0),
             "pos3df": torch.from_numpy(item["pos3df"].astype(np.float32)).unsqueeze(0),
             "rotmatl": torch.from_numpy(item["rotmatl"].astype(np.float32)).unsqueeze(0),
@@ -560,9 +616,12 @@ def run_inference(sample_name, progress=gr.Progress()):
             output_path=os.path.join(tempfile.gettempdir(), f"duolando_rl_gt_vs_{sample_name.replace('/', '_')}.mp4"),
         )
 
-        music_path = get_music_path_for_sample(MUSIC_SOURCE, sample_name)
-        if not os.path.isfile(music_path):
-            music_path = None
+        if _use_salsa_dataset:
+            music_path = get_salsa_music_path(SALSA_MUSIC_MP3, sample_name)
+        else:
+            music_path = get_music_path_for_sample(MUSIC_SOURCE, sample_name)
+            if not os.path.isfile(music_path):
+                music_path = None
         progress(1.0, desc="Done")
         return out_gpt, out_rl, overlay_gpt, overlay_rl, music_path, "Follower GPT and Follower GPT w. RL ready. Overlay videos: GT (shadow) vs generated (solid)."
     except Exception as e:
@@ -574,11 +633,17 @@ def build_ui():
     _load_config()  # so model info is available for VQ-VAE tab
     with gr.Blocks(title="Duolando – Data & Inference", theme=gr.themes.Soft(primary_hue="orange", secondary_hue="orange")) as app:
         gr.Markdown("# Duolando – Data visualization & inference")
-        gr.Markdown("Load DD100 data, pick a sample, then use **Ground truth** or **Inference** to visualize.")
+        gr.Markdown("Choose **DD100** or **Salsa** (cache built by `Salsa_utils.salsa_duolando_cache`), load data, pick a sample, then use **Ground truth** or **Inference**.")
 
         with gr.Row():
+            dataset_choice = gr.Radio(
+                label="Dataset",
+                choices=["DD100", "Salsa"],
+                value="DD100",
+                info="Salsa uses cache under data/salsa_duolando (or SALSA_DUOLANDO_CACHE).",
+            )
             load_btn = gr.Button("Load and index data", variant="primary")
-            load_status = gr.Textbox(label="Status", value="Click 'Load and index data' to start.", interactive=False)
+            load_status = gr.Textbox(label="Status", value="Select dataset and click 'Load and index data'.", interactive=False)
 
         sample_dropdown = gr.Dropdown(
             label="Sample",
@@ -586,7 +651,7 @@ def build_ui():
             value=None,
             allow_custom_value=False,
         )
-        load_btn.click(fn=load_and_index_data, outputs=[sample_dropdown, load_status])
+        load_btn.click(fn=load_and_index_data, inputs=[dataset_choice], outputs=[sample_dropdown, load_status])
 
         with gr.Tabs():
             with gr.Tab("Ground truth"):

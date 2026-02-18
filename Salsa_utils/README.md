@@ -4,7 +4,7 @@ Utilities and extensions for the Duolando baseline. More features will be added 
 
 ## Visualization app
 
-A Gradio app to load DD100 data, visualize ground-truth duet motion, and run inference with the pretrained Follower GPT and Follower GPT w. RL models.
+A Gradio app to load **DD100** or **Salsa** data, visualize ground-truth duet motion, run VQ-VAE reconstruction, and run inference with the pretrained Follower GPT and Follower GPT w. RL models.
 
 **Run from the Duolando repo root:**
 
@@ -13,4 +13,64 @@ cd Baselines/Salsa_Duolando
 python Salsa_utils/visualization/vis_app.py
 ```
 
-Optional: `--port 7861` if 7860 is in use, `--share` for a public link.
+- Use the **Dataset** radio to choose **DD100** or **Salsa**, then click **Load and index data**.
+- For Salsa, build the cache first (see below). Optional: `--port 7861`, `--share`.
+
+---
+
+## Creating the Salsa cache
+
+To use the **Salsa pair LMDB** (e.g. from Salsa-Agent) in the same pipeline as DD100, you must build a Duolando-compatible cache. Run the cache script **from the Salsa_Duolando repo root**.
+
+### Prerequisites
+
+- **LMDB**: Train and/or test pair LMDB directories (e.g. `lmdb_Salsa_pair/lmdb_train`, `lmdb_Salsa_pair/lmdb_test`).
+- **Python deps**: `lmdb`, `pyarrow`, `numpy`, `scipy`, `torch`, `tqdm`. For SMPLX-based pos3d: `smplx` and an SMPLX model directory. For music features: run from the Duolando repo so the same pipeline as DD100 is used (librosa, essentia); otherwise use `--no_audio_feature` to write zero music.
+
+### Commands: test and train splits
+
+Build **test** cache (e.g. for the visualization app):
+
+```bash
+cd Baselines/Salsa_Duolando
+
+python -m Salsa_utils.salsa_duolando_cache \
+  --source_lmdb /path/to/lmdb_Salsa_pair/lmdb_test \
+  --out_dir ./data/salsa_duolando \
+  --split test \
+  --no_smplx
+```
+
+Build **train** cache (e.g. for training later):
+
+```bash
+python -m Salsa_utils.salsa_duolando_cache \
+  --source_lmdb /path/to/lmdb_Salsa_pair/lmdb_train \
+  --out_dir ./data/salsa_duolando \
+  --split train \
+  --no_smplx
+```
+
+Use the same `--out_dir` so both splits live under `./data/salsa_duolando` (e.g. `motion/pos3d/train/`, `motion/pos3d/test/`, `music/feature/train/`, `music/feature/test/`).
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `--no_smplx` | Build from 22-joint keypoints in the LMDB (no SMPLX model). Recommended if you don’t have SMPLX. |
+| `--no_audio_feature` | Skip music feature extraction; write zero music. Use if Duolando’s music pipeline (librosa, essentia) is not available. |
+| `--smplx_path PATH` | SMPLX model directory (or set env `SMPLX_MODEL_PATH`). Omit if using `--no_smplx`. |
+| `--no_mp3` | Do not write `music/mp3/` WAV/MP3 files. |
+| `--no_rot_x` | Do not apply +90° X rotation (default applies it for upright view). |
+
+### After building
+
+- In the Gradio app, select **Salsa** and click **Load and index data**. The app uses `./data/salsa_duolando` by default; set env **SALSA_DUOLANDO_CACHE** to the cache root (folder containing `motion/` and `music/`).
+
+For the data contract, conversion details, and windowing options, see **SALSA_DUOLANDO_DATA.md** (internal reference).
+
+---
+
+## Training on Salsa 
+
+comming soon!
