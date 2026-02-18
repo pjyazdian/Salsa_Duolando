@@ -39,7 +39,12 @@ if _VIS_DIR not in sys.path:
 os.chdir(_REPO_ROOT)
 
 # Local visualization helpers (no base code changes)
-from visualization_utils import pos3d_to_video, get_music_path_for_sample, dataset_pos3d_to_display_pos3d
+from visualization_utils import (
+    pos3d_to_video,
+    pos3d_to_video_gt_vs_recon,
+    get_music_path_for_sample,
+    dataset_pos3d_to_display_pos3d,
+)
 
 # Base Duolando imports (used as-is)
 from datasets.dd100lf_all2 import DD100lfAll
@@ -372,6 +377,14 @@ _sample_names = []
 _width = 960
 _height = 540
 
+TOKENS_TO_POSE_EXPLANATION = """
+**From tokens to pose 3D**
+
+- **Pose VQ-VAE** has 4 codebooks (upper body, lower body, left hand, right hand). Each decoder turns its token sequence back into a piece of the body (joint positions in a root-zeroed space). These 4 parts are **assembled** into one full body pose (55 joints × 3) per frame.
+- **Translation VQ-VAE** has 1 codebook. Its decoder turns the relation tokens into a sequence of **relative translation** (follower root − leader root, scaled).  
+- **Combining for animation:** For the leader we take the decoded pose and add the **leader root trajectory** (from data) to get world-space poses. For the follower we take the decoded pose and add **leader root + decoded relative translation** so the follower stays correctly positioned relative to the leader. Hand joints are then unscaled (×0.1 + wrist) and roots are broadcast to all joints. That yields the final 3D poses used for the skeleton animation.
+"""
+
 
 def load_and_index_data(progress=gr.Progress()):
     """Load DD100 test set and fill sample list. Returns dropdown choices and status."""
@@ -431,9 +444,9 @@ def visualize_ground_truth(sample_name, progress=gr.Progress()):
 def visualize_vqvae_reconstruction(sample_name, progress=gr.Progress()):
     """Encode selected sample through pose + translation VQ-VAEs (tokenize + detokenize) and visualize reconstruction."""
     if _dataset is None:
-        return None, None, None, None, "Load and index data first (click 'Load and index data')."
+        return None, None, None, None, None, "Load and index data first (click 'Load and index data')."
     if not sample_name or sample_name not in _sample_names:
-        return None, None, None, None, "Please select a sample from the dropdown."
+        return None, None, None, None, None, "Please select a sample from the dropdown."
     try:
         idx = _sample_names.index(sample_name)
         progress(0.1, desc="Loading model...")
@@ -446,7 +459,7 @@ def visualize_vqvae_reconstruction(sample_name, progress=gr.Progress()):
         }
         progress(0.45, desc="Pose + translation VQ-VAE encode + decode...")
         recon_leader, recon_follower, gt_transl, recon_transl, tokens_text = _run_vqvae_reconstruction(agent, batch)
-        progress(0.7, desc="Rendering video...")
+        progress(0.6, desc="Rendering reconstruction video...")
         out_path = pos3d_to_video(
             recon_follower,
             recon_leader,
@@ -455,29 +468,45 @@ def visualize_vqvae_reconstruction(sample_name, progress=gr.Progress()):
             height=_height,
             output_path=os.path.join(tempfile.gettempdir(), f"duolando_vqvae_recon_{sample_name.replace('/', '_')}.mp4"),
         )
+        progress(0.75, desc="Rendering GT vs Recon overlay...")
+        gt_follower = dataset_pos3d_to_display_pos3d(item["pos3df"])
+        gt_leader = dataset_pos3d_to_display_pos3d(item["pos3dl"])
+        T = min(len(gt_follower), len(gt_leader), len(recon_follower), len(recon_leader))
+        overlay_path = pos3d_to_video_gt_vs_recon(
+            gt_follower[:T],
+            gt_leader[:T],
+            recon_follower[:T],
+            recon_leader[:T],
+            fps=30,
+            width=_width,
+            height=_height,
+            output_path=os.path.join(tempfile.gettempdir(), f"duolando_vqvae_gt_vs_recon_{sample_name.replace('/', '_')}.mp4"),
+        )
         progress(0.85, desc="Building relation chart...")
         fig = _plot_translation_gt_vs_recon(gt_transl, recon_transl)
         music_path = get_music_path_for_sample(MUSIC_SOURCE, sample_name)
         if not os.path.isfile(music_path):
             music_path = None
         progress(1.0, desc="Done")
-        msg = "Full VQ-VAE reconstruction (pose + translation) ready. Video uses decoded pose and decoded relative translation; chart compares GT vs reconstructed relation."
-        return out_path, music_path, fig, tokens_text, msg
+        msg = "Full VQ-VAE reconstruction ready. First video: recon only. Second: GT (shadow) vs recon (solid). Chart: relation GT vs recon."
+        return out_path, overlay_path, music_path, fig, tokens_text, msg
     except Exception as e:
         import traceback
-        return None, None, None, None, f"Error: {e}\n{traceback.format_exc()}"
+        return None, None, None, None, None, f"Error: {e}\n{traceback.format_exc()}"
 
 
 def run_inference(sample_name, progress=gr.Progress()):
-    """Run both Follower GPT and Follower GPT w. RL on the selected sample; return both videos + audio."""
+    """Run both Follower GPT and Follower GPT w. RL on the selected sample; return both videos + overlay videos + audio."""
     if _dataset is None:
-        return None, None, None, "Load and index data first."
+        return None, None, None, None, None, "Load and index data first."
     if not sample_name or sample_name not in _sample_names:
-        return None, None, None, "Please select a sample from the dropdown."
+        return None, None, None, None, None, "Please select a sample from the dropdown."
     try:
         idx = _sample_names.index(sample_name)
         progress(0.05, desc="Loading sample...")
         item = _dataset[idx]
+        gt_follower = dataset_pos3d_to_display_pos3d(item["pos3df"])
+        gt_leader = dataset_pos3d_to_display_pos3d(item["pos3dl"])
         batch = {
             "music": torch.from_numpy(item["music"].astype(np.float32)).unsqueeze(0),
             "pos3dl": torch.from_numpy(item["pos3dl"].astype(np.float32)).unsqueeze(0),
@@ -501,13 +530,20 @@ def run_inference(sample_name, progress=gr.Progress()):
             height=_height,
             output_path=os.path.join(tempfile.gettempdir(), f"duolando_gpt_{sample_name.replace('/', '_')}.mp4"),
         )
+        T_gpt = min(len(gt_follower), len(gt_leader), len(pose_follower_gpt), len(pose_leader))
+        overlay_gpt = pos3d_to_video_gt_vs_recon(
+            gt_follower[:T_gpt], gt_leader[:T_gpt],
+            pose_follower_gpt[:T_gpt], pose_leader[:T_gpt],
+            fps=30, width=_width, height=_height,
+            output_path=os.path.join(tempfile.gettempdir(), f"duolando_gpt_gt_vs_{sample_name.replace('/', '_')}.mp4"),
+        )
 
         # 2) Follower GPT w. RL
-        progress(0.6, desc="Loading Follower GPT w. RL...")
+        progress(0.65, desc="Loading Follower GPT w. RL...")
         agent_rl = _get_agent_rl()
-        progress(0.75, desc="Running RL inference...")
+        progress(0.78, desc="Running RL inference...")
         pose_follower_rl, _ = _run_single_inference(agent_rl, batch)
-        progress(0.9, desc="Rendering RL video...")
+        progress(0.88, desc="Rendering RL video...")
         out_rl = pos3d_to_video(
             pose_follower_rl,
             pose_leader,
@@ -516,15 +552,22 @@ def run_inference(sample_name, progress=gr.Progress()):
             height=_height,
             output_path=os.path.join(tempfile.gettempdir(), f"duolando_rl_{sample_name.replace('/', '_')}.mp4"),
         )
+        T_rl = min(len(gt_follower), len(gt_leader), len(pose_follower_rl), len(pose_leader))
+        overlay_rl = pos3d_to_video_gt_vs_recon(
+            gt_follower[:T_rl], gt_leader[:T_rl],
+            pose_follower_rl[:T_rl], pose_leader[:T_rl],
+            fps=30, width=_width, height=_height,
+            output_path=os.path.join(tempfile.gettempdir(), f"duolando_rl_gt_vs_{sample_name.replace('/', '_')}.mp4"),
+        )
 
         music_path = get_music_path_for_sample(MUSIC_SOURCE, sample_name)
         if not os.path.isfile(music_path):
             music_path = None
         progress(1.0, desc="Done")
-        return out_gpt, out_rl, music_path, "Follower GPT and Follower GPT w. RL results ready. Play videos and song below."
+        return out_gpt, out_rl, overlay_gpt, overlay_rl, music_path, "Follower GPT and Follower GPT w. RL ready. Overlay videos: GT (shadow) vs generated (solid)."
     except Exception as e:
         import traceback
-        return None, None, None, f"Error: {e}\n{traceback.format_exc()}"
+        return None, None, None, None, None, f"Error: {e}\n{traceback.format_exc()}"
 
 
 def build_ui():
@@ -566,32 +609,38 @@ def build_ui():
                 )
                 with gr.Accordion("VQ-VAE model details", open=True):
                     vqvae_model_info = gr.Markdown(value=_get_vqvae_model_info(), label="Model info")
+                with gr.Accordion("From tokens to pose 3D", open=False):
+                    vqvae_tokens_to_pose = gr.Markdown(value=TOKENS_TO_POSE_EXPLANATION, label="Tokens to pose")
                 vqvae_btn = gr.Button("Reconstruct", variant="secondary")
                 vqvae_status = gr.Textbox(label="Status", interactive=False)
                 with gr.Row():
                     vqvae_video = gr.Video(label="VQ-VAE reconstruction")
-                    vqvae_audio = gr.Audio(label="Song", type="filepath")
+                    vqvae_overlay_video = gr.Video(label="GT vs Recon (overlay: shadow = GT, solid = recon)")
+                vqvae_audio = gr.Audio(label="Song", type="filepath")
                 vqvae_plot = gr.Plot(label="Relative translation: Ground truth vs Reconstructed")
                 with gr.Accordion("Tokens used for this reconstruction", open=True):
                     vqvae_tokens = gr.Markdown(value="Run **Reconstruct** to see the discrete tokens (leader pose, follower pose, translation) extracted for this sample.", label="Tokens")
                 vqvae_btn.click(
                     fn=visualize_vqvae_reconstruction,
                     inputs=[sample_dropdown],
-                    outputs=[vqvae_video, vqvae_audio, vqvae_plot, vqvae_tokens, vqvae_status],
+                    outputs=[vqvae_video, vqvae_overlay_video, vqvae_audio, vqvae_plot, vqvae_tokens, vqvae_status],
                 )
 
             with gr.Tab("Inference"):
-                gr.Markdown("Runs **Follower GPT** and **Follower GPT w. RL** (README §1) for the selected sample. Both results are shown below.")
+                gr.Markdown("Runs **Follower GPT** and **Follower GPT w. RL** (README §1) for the selected sample. First row: generated only. Second row: GT (shadow) vs generated (solid).")
                 inf_btn = gr.Button("Run inference (GPT + RL)", variant="secondary")
                 inf_status = gr.Textbox(label="Status", interactive=False)
                 with gr.Row():
                     inf_video_gpt = gr.Video(label="Follower GPT")
                     inf_video_rl = gr.Video(label="Follower GPT w. RL")
+                with gr.Row():
+                    inf_overlay_gpt = gr.Video(label="GT vs GPT (overlay)")
+                    inf_overlay_rl = gr.Video(label="GT vs RL (overlay)")
                 inf_audio = gr.Audio(label="Song", type="filepath")
                 inf_btn.click(
                     fn=run_inference,
                     inputs=[sample_dropdown],
-                    outputs=[inf_video_gpt, inf_video_rl, inf_audio, inf_status],
+                    outputs=[inf_video_gpt, inf_video_rl, inf_overlay_gpt, inf_overlay_rl, inf_audio, inf_status],
                 )
 
     return app

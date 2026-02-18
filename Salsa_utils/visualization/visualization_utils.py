@@ -61,6 +61,94 @@ def render_duet_frame(
     return frame
 
 
+def render_duet_frame_gt_vs_recon(
+    gt_follower,
+    gt_leader,
+    recon_follower,
+    recon_leader,
+    width=960,
+    height=540,
+    scale=100,
+    color_gt=(50, 50, 50),
+    color_recon_follower=(80, 80, 255),
+    color_recon_leader=(255, 80, 80),
+    thickness_gt=4,
+    thickness_recon=2,
+):
+    """
+    Render one frame with ground truth as shadow (thick, dark) and reconstructed on top (normal colors).
+    Same projection and edges as render_duet_frame; GT drawn first, then recon, for overlay comparison.
+    All joints: (55, 3).
+    """
+    center_x, center_y = width // 2, height // 2
+    frame = np.zeros((height, width, 3), dtype=np.uint8)
+    frame[:] = (30, 30, 30)
+
+    def draw_skeleton(joints, color, thickness):
+        if joints is None or len(joints) == 0:
+            return
+        pts = _project_and_scale(joints, scale=scale, center_x=center_x, center_y=center_y)
+        for (i, j) in SMPLX_EDGES:
+            if 0 <= i < len(pts) and 0 <= j < len(pts):
+                pt1, pt2 = tuple(pts[i]), tuple(pts[j])
+                cv2.line(frame, pt1, pt2, color, thickness=thickness)
+
+    # 1) Ground truth as shadow (drawn first)
+    draw_skeleton(gt_follower, color_gt, thickness_gt)
+    draw_skeleton(gt_leader, color_gt, thickness_gt)
+    # 2) Reconstructed on top
+    draw_skeleton(recon_follower, color_recon_follower, thickness_recon)
+    draw_skeleton(recon_leader, color_recon_leader, thickness_recon)
+    return frame
+
+
+def pos3d_to_video_gt_vs_recon(
+    gt_follower,
+    gt_leader,
+    recon_follower,
+    recon_leader,
+    fps=30,
+    width=960,
+    height=540,
+    scale=100,
+    output_path=None,
+):
+    """
+    Render overlay video: ground truth (shadow) + reconstructed (solid).
+    All inputs (T, 55, 3) or (T, 165); trimmed to min length.
+    Returns path to the written video file.
+    """
+    if gt_follower.ndim == 2:
+        gt_follower = gt_follower.reshape(-1, 55, 3)
+    if gt_leader.ndim == 2:
+        gt_leader = gt_leader.reshape(-1, 55, 3)
+    if recon_follower.ndim == 2:
+        recon_follower = recon_follower.reshape(-1, 55, 3)
+    if recon_leader.ndim == 2:
+        recon_leader = recon_leader.reshape(-1, 55, 3)
+    T = min(len(gt_follower), len(gt_leader), len(recon_follower), len(recon_leader))
+    if T == 0:
+        raise ValueError("Empty motion sequence")
+    if output_path is None:
+        fd, output_path = tempfile.mkstemp(suffix="_gt_vs_recon.mp4")
+        os.close(fd)
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    for t in range(T):
+        frame = render_duet_frame_gt_vs_recon(
+            gt_follower[t],
+            gt_leader[t],
+            recon_follower[t],
+            recon_leader[t],
+            width=width,
+            height=height,
+            scale=scale,
+        )
+        out.write(frame)
+    out.release()
+    return output_path
+
+
 def pos3d_to_video(
     pos3d_follower,
     pos3d_leader,
