@@ -71,6 +71,25 @@ For the data contract, conversion details, and windowing options, see **SALSA_DU
 
 ---
 
-## Training on Salsa 
+## Training on Salsa
 
-comming soon!
+Train Duolando models from scratch on the Salsa cache. **Prerequisite:** build the Salsa cache for both train and test splits (see above). Run all commands from the **Salsa_Duolando** repo root (`Baselines/Salsa_Duolando`).
+
+Optional: install Weights & Biases for logging (`pip install wandb`). If available, the VQ-VAE training script will log loss, learning rate, and checkpoint events to wandb (project: `duolando-motion-vqvae`, run name: from config `expname`).
+
+### Step 1: Motion VQ-VAE
+
+Train the motion VQ-VAE (SepVQVAEXM) on Salsa motion data. This produces the codebook used by the Follower GPT later.
+
+**Command:**
+
+```bash
+cd Baselines/Salsa_Duolando
+
+python main_mix.py --config configs/sep_vqvaexm_full_final_salsa.yaml --train
+```
+
+- **Config:** `configs/sep_vqvaexm_full_final_salsa.yaml` — same as `sep_vqvaexm_full_final.yaml` except `data_root` points to `./data/salsa_duolando/motion` and `expname` is `motion_vqvae_salsa`.
+- **Output:** Checkpoints under `experiments/motion_vqvae_salsa/ckpt/` (e.g. `epoch_20.pt`, `epoch_40.pt`). Training runs for 500 epochs by default; `save_per_epochs: 20` and `test_freq: 500` are set in the config.
+
+Further steps (Transl VQ-VAE, Follower GPT, Follower GPT + RL) will be added here once this step is validated.
