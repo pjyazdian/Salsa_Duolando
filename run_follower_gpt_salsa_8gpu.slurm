@@ -24,9 +24,14 @@ ulimit -Su unlimited
 
 mkdir -p log
 
-# cd to script dir so the job works regardless of where you submitted from
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+# Run from the directory where sbatch was run (Slurm sets SLURM_SUBMIT_DIR there).
+# Required on Solar: job may start in $HOME on the compute node, so BASH_SOURCE-based cd can fail.
+if [ -n "${SLURM_SUBMIT_DIR}" ]; then
+    cd "$SLURM_SUBMIT_DIR"
+else
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    cd "$SCRIPT_DIR"
+fi
 
 # Conda (mars-lab / Payam)
 source /project/rosie-lab/Payam/conda/miniconda3/etc/profile.d/conda.sh
