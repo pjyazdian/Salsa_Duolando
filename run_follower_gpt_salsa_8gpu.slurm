@@ -7,7 +7,7 @@
 # Or from Duolando dir: sbatch run_follower_gpt_salsa_8gpu.slurm
 
 #SBATCH -J gpt_salsa
-#SBATCH --partition=3dlg-hcvc-lab-long
+
 #SBATCH --account=mars-lab
 #SBATCH --gres=gpu:8
 #SBATCH --ntasks=1
