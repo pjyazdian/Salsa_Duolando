@@ -75,7 +75,7 @@ For the data contract, conversion details, and windowing options, see **SALSA_DU
 
 Train Duolando models from scratch on the Salsa cache. **Prerequisite:** build the Salsa cache for both train and test splits (see above). Run all commands from the **Salsa_Duolando** repo root (`Baselines/Salsa_Duolando`).
 
-Optional: install Weights & Biases for logging (`pip install wandb`). If available, the VQ-VAE training script will log loss, learning rate, and checkpoint events to wandb (project: `duolando-motion-vqvae`, run name: from config `expname`).
+Optional: install Weights & Biases for logging (`pip install wandb`). If available, the motion and translation VQ-VAE training scripts log loss, learning rate, and checkpoint events to wandb (projects: `duolando-motion-vqvae`, `duolando-transl-vqvae`; run name from config `expname`).
 
 ### Step 1: Motion VQ-VAE
 
@@ -92,4 +92,19 @@ python main_mix.py --config configs/sep_vqvaexm_full_final_salsa.yaml --train
 - **Config:** `configs/sep_vqvaexm_full_final_salsa.yaml` — same as `sep_vqvaexm_full_final.yaml` except `data_root` points to `./data/salsa_duolando/motion` and `expname` is `motion_vqvae_salsa`.
 - **Output:** Checkpoints under `experiments/motion_vqvae_salsa/ckpt/` (e.g. `epoch_20.pt`, `epoch_40.pt`). Training runs for 500 epochs by default; `save_per_epochs: 20` and `test_freq: 500` are set in the config.
 
-Further steps (Transl VQ-VAE, Follower GPT, Follower GPT + RL) will be added here once this step is validated.
+### Step 2: Translation VQ-VAE
+
+Train the **translation VQ-VAE** (relative translation between leader and follower roots). Uses the same Salsa cache (motion + music). Requires Step 1 only for the pipeline order; the translation model does not load the motion VQ-VAE.
+
+**Command:**
+
+```bash
+cd Baselines/Salsa_Duolando
+
+python main_transl.py --config configs/transl_vqvaex_final_salsa.yaml --train
+```
+
+- **Config:** `configs/transl_vqvaex_final_salsa.yaml` — same as `transl_vqvaex_final.yaml` except `music_root` and `data_root` point to `./data/salsa_duolando/music` and `./data/salsa_duolando/motion`, and `expname` is `transl_vqvae_salsa`.
+- **Output:** Checkpoints under `experiments/transl_vqvae_salsa/ckpt/` (e.g. `epoch_20.pt`, `epoch_40.pt`). Default 500 epochs; `save_per_epochs: 20`, `test_freq: 500`.
+
+Further steps (Follower GPT, Follower GPT + RL) will be added here once validated.

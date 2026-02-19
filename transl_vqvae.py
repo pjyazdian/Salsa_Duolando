@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.utils.data
-from datasets.dd100lf_all import DD100lfAll as DD100lf
+from datasets.dd100lf_all2 import DD100lfAll as DD100lf
 # from models.vqvae import VQVAE
 
 from utils.log import Logger
@@ -31,6 +31,11 @@ import torch.nn.functional as F
 
 import matplotlib.pyplot as plt
 
+try:
+    import wandb
+except ImportError:
+    wandb = None
+
 
 class MoQ():
     def __init__(self, args):
@@ -48,8 +53,26 @@ class MoQ():
         optimizer = self.optimizer
         log = Logger(self.config, self.expdir)
         updates = 0
-        
-        if hasattr(config, 'init_weight') and config.init_weight is not None and config.init_weight is not '':
+
+        if wandb is not None:
+            wandb.init(
+                project="duolando-transl-vqvae",
+                name=config.expname,
+                config={
+                    "expname": config.expname,
+                    "epoch": config.epoch,
+                    "data_root": config.data.train.data_root,
+                    "music_root": config.data.train.music_root,
+                    "batch_size": config.data.train.batch_size,
+                    "interval": config.data.train.interval,
+                    "move": config.data.train.move,
+                },
+                reinit=True,
+            )
+            model_to_watch = self.model.module if hasattr(self.model, "module") else self.model
+            wandb.watch(model_to_watch, log="all", log_freq=100)
+
+        if hasattr(config, 'init_weight') and config.init_weight is not None and config.init_weight != '':
             print('Use pretrained model!')
             print(config.init_weight)  
             checkpoint = torch.load(config.init_weight)
@@ -88,9 +111,22 @@ class MoQ():
                 stats = {
                     'updates': updates,
                     'loss': loss.item(),
-                    # 'velocity_loss_if_have': metrics[0]['velocity_loss'].item() + metrics[1]['velocity_loss'].item(),
-                    # 'acc_loss_if_have': metrics[0]['acceleration_loss'].item() + metrics[1]['acceleration_loss'].item()
                 }
+                if wandb is not None:
+                    log_dict = {"train/loss": stats["loss"], "epoch": epoch_i, "updates": updates}
+                    try:
+                        log_dict["train/lr"] = optimizer.param_groups[0]["lr"]
+                    except Exception:
+                        pass
+                    if metrics and isinstance(metrics, (list, tuple)):
+                        for i, m in enumerate(metrics):
+                            if isinstance(m, dict):
+                                for k, v in m.items():
+                                    if hasattr(v, "item"):
+                                        log_dict[f"train/{k}_part{i}"] = v.item()
+                                    else:
+                                        log_dict[f"train/{k}_part{i}"] = float(v)
+                    wandb.log(log_dict, step=updates)
                 #if epoch_i % self.config.log_per_updates == 0:
                 log.update(stats)
                 updates += 1
@@ -105,6 +141,8 @@ class MoQ():
             if epoch_i % config.save_per_epochs == 0 or epoch_i == 1:
                 filename = os.path.join(self.ckptdir, f'epoch_{epoch_i}.pt')
                 torch.save(checkpoint, filename)
+                if wandb is not None:
+                    wandb.log({"checkpoint_saved_epoch": epoch_i}, step=updates)
             # Eval
             if epoch_i % config.test_freq == 0:
                 with torch.no_grad():
