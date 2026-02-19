@@ -393,6 +393,59 @@ TOKENS_TO_POSE_EXPLANATION = """
 """
 
 
+def _list_motion_vqvae_checkpoints():
+    """List (label, path) for motion VQ-VAE: pretrained + all .pt in experiments/*motion_vqvae*/ckpt/."""
+    experiments_dir = os.path.join(_REPO_ROOT, "experiments")
+    choices = []
+    pretrained_path = os.path.join(experiments_dir, "pretrained", "motion_vqvae", "ckpt", "epoch_500.pt")
+    if os.path.isfile(pretrained_path):
+        choices.append(("Pretrained (motion_vqvae)", pretrained_path))
+    if os.path.isdir(experiments_dir):
+        for name in sorted(os.listdir(experiments_dir)):
+            if "motion_vqvae" not in name:
+                continue
+            d = os.path.join(experiments_dir, name)
+            if not os.path.isdir(d):
+                continue
+            ckpt_dir = os.path.join(d, "ckpt")
+            if not os.path.isdir(ckpt_dir):
+                continue
+            for f in sorted(os.listdir(ckpt_dir)):
+                if f.endswith(".pt"):
+                    choices.append((f"{name} / {f}", os.path.join(ckpt_dir, f)))
+    return choices
+
+
+# Cached list for dropdown and lookup (label -> path)
+_VQVAE_CKPT_CHOICES = _list_motion_vqvae_checkpoints()
+
+
+def _list_transl_vqvae_checkpoints():
+    """List (label, path) for translation VQ-VAE: pretrained + all .pt in experiments/*transl_vqvae*/ckpt/."""
+    experiments_dir = os.path.join(_REPO_ROOT, "experiments")
+    choices = []
+    pretrained_path = os.path.join(experiments_dir, "pretrained", "transl_vqvae", "ckpt", "epoch_500.pt")
+    if os.path.isfile(pretrained_path):
+        choices.append(("Pretrained (transl_vqvae)", pretrained_path))
+    if os.path.isdir(experiments_dir):
+        for name in sorted(os.listdir(experiments_dir)):
+            if "transl_vqvae" not in name:
+                continue
+            d = os.path.join(experiments_dir, name)
+            if not os.path.isdir(d):
+                continue
+            ckpt_dir = os.path.join(d, "ckpt")
+            if not os.path.isdir(ckpt_dir):
+                continue
+            for f in sorted(os.listdir(ckpt_dir)):
+                if f.endswith(".pt"):
+                    choices.append((f"{name} / {f}", os.path.join(ckpt_dir, f)))
+    return choices
+
+
+_TRANSL_VQVAE_CKPT_CHOICES = _list_transl_vqvae_checkpoints()
+
+
 def load_and_index_data(dataset_choice, progress=gr.Progress()):
     """Load dataset (DD100 or Salsa cache) and fill sample list. Returns dropdown choices and status."""
     global _dataset, _sample_names, _use_salsa_dataset
@@ -474,16 +527,36 @@ def visualize_ground_truth(sample_name, progress=gr.Progress()):
         return None, None, f"Error: {e}\n{traceback.format_exc()}"
 
 
-def visualize_vqvae_reconstruction(sample_name, progress=gr.Progress()):
-    """Encode selected sample through pose + translation VQ-VAEs (tokenize + detokenize) and visualize reconstruction."""
+def visualize_vqvae_reconstruction(sample_name, motion_ckpt_choice, transl_ckpt_choice, progress=gr.Progress()):
+    """Encode selected sample through pose + translation VQ-VAEs (tokenize + detokenize) and visualize reconstruction.
+    motion_ckpt_choice / transl_ckpt_choice: labels from Motion VQ-VAE and Translation VQ-VAE dropdowns.
+    """
     if _dataset is None:
         return None, None, None, None, None, "Load and index data first (click 'Load and index data')."
     if not sample_name or sample_name not in _sample_names:
         return None, None, None, None, None, "Please select a sample from the dropdown."
+    if not motion_ckpt_choice:
+        return None, None, None, None, None, "Please select a Motion VQ-VAE checkpoint."
+    if not transl_ckpt_choice:
+        return None, None, None, None, None, "Please select a Translation VQ-VAE checkpoint."
     try:
+        motion_path = next((p for label, p in _VQVAE_CKPT_CHOICES if label == motion_ckpt_choice), None)
+        transl_path = next((p for label, p in _TRANSL_VQVAE_CKPT_CHOICES if label == transl_ckpt_choice), None)
+        if not motion_path or not os.path.isfile(motion_path):
+            return None, None, None, None, None, f"Checkpoint not found: {motion_ckpt_choice}"
+        if not transl_path or not os.path.isfile(transl_path):
+            return None, None, None, None, None, f"Checkpoint not found: {transl_ckpt_choice}"
         idx = _sample_names.index(sample_name)
-        progress(0.1, desc="Loading model...")
+        progress(0.05, desc="Loading model...")
         agent = _get_agent()
+        progress(0.12, desc="Loading motion VQ-VAE checkpoint...")
+        checkpoint = torch.load(motion_path, map_location="cpu")
+        agent.model.load_state_dict(checkpoint["model"], strict=True)
+        agent.model.eval()
+        progress(0.2, desc="Loading translation VQ-VAE checkpoint...")
+        checkpoint_t = torch.load(transl_path, map_location="cpu")
+        agent.model3.load_state_dict(checkpoint_t["model"], strict=True)
+        agent.model3.eval()
         progress(0.3, desc="Loading sample...")
         item = _dataset[idx]
         batch = {
@@ -550,13 +623,23 @@ def _ensure_music_54(music: np.ndarray, n_music: int = 54) -> np.ndarray:
     return music
 
 
-def run_inference(sample_name, progress=gr.Progress()):
-    """Run both Follower GPT and Follower GPT w. RL on the selected sample; return both videos + overlay videos + audio."""
+def run_inference(sample_name, motion_ckpt_choice, transl_ckpt_choice, progress=gr.Progress()):
+    """Run both Follower GPT and Follower GPT w. RL on the selected sample; return both videos + overlay videos + audio.
+    Uses the selected Motion VQ-VAE and Translation VQ-VAE checkpoints for both GPT and RL agents.
+    """
     if _dataset is None:
         return None, None, None, None, None, "Load and index data first."
     if not sample_name or sample_name not in _sample_names:
         return None, None, None, None, None, "Please select a sample from the dropdown."
+    if not motion_ckpt_choice or not transl_ckpt_choice:
+        return None, None, None, None, None, "Please select both Motion VQ-VAE and Translation VQ-VAE checkpoints."
     try:
+        motion_path = next((p for label, p in _VQVAE_CKPT_CHOICES if label == motion_ckpt_choice), None)
+        transl_path = next((p for label, p in _TRANSL_VQVAE_CKPT_CHOICES if label == transl_ckpt_choice), None)
+        if not motion_path or not os.path.isfile(motion_path):
+            return None, None, None, None, None, f"Checkpoint not found: {motion_ckpt_choice}"
+        if not transl_path or not os.path.isfile(transl_path):
+            return None, None, None, None, None, f"Checkpoint not found: {transl_ckpt_choice}"
         idx = _sample_names.index(sample_name)
         progress(0.05, desc="Loading sample...")
         item = _dataset[idx]
@@ -575,6 +658,13 @@ def run_inference(sample_name, progress=gr.Progress()):
         # 1) Follower GPT
         progress(0.15, desc="Loading Follower GPT...")
         agent_gpt = _get_agent()
+        progress(0.2, desc="Loading motion & translation VQ-VAEs...")
+        ckpt_m = torch.load(motion_path, map_location="cpu")
+        agent_gpt.model.load_state_dict(ckpt_m["model"], strict=True)
+        agent_gpt.model.eval()
+        ckpt_t = torch.load(transl_path, map_location="cpu")
+        agent_gpt.model3.load_state_dict(ckpt_t["model"], strict=True)
+        agent_gpt.model3.eval()
         progress(0.35, desc="Running Follower GPT inference...")
         pose_follower_gpt, pose_leader = _run_single_inference(agent_gpt, batch)
         progress(0.5, desc="Rendering GPT video...")
@@ -597,6 +687,11 @@ def run_inference(sample_name, progress=gr.Progress()):
         # 2) Follower GPT w. RL
         progress(0.65, desc="Loading Follower GPT w. RL...")
         agent_rl = _get_agent_rl()
+        progress(0.7, desc="Loading motion & translation VQ-VAEs...")
+        agent_rl.model.load_state_dict(ckpt_m["model"], strict=True)
+        agent_rl.model.eval()
+        agent_rl.model3.load_state_dict(ckpt_t["model"], strict=True)
+        agent_rl.model3.eval()
         progress(0.78, desc="Running RL inference...")
         pose_follower_rl, _ = _run_single_inference(agent_rl, batch)
         progress(0.88, desc="Rendering RL video...")
@@ -653,6 +748,20 @@ def build_ui():
         )
         load_btn.click(fn=load_and_index_data, inputs=[dataset_choice], outputs=[sample_dropdown, load_status])
 
+        with gr.Accordion("Model checkpoints (used for VQ-VAE reconstruction & Inference)", open=True):
+            motion_ckpt_dropdown = gr.Dropdown(
+                choices=[label for label, _ in _VQVAE_CKPT_CHOICES],
+                value=_VQVAE_CKPT_CHOICES[0][0] if _VQVAE_CKPT_CHOICES else None,
+                label="Motion VQ-VAE checkpoint",
+                info="Pretrained or experiments/motion_vqvae*/ckpt/*.pt",
+            )
+            transl_ckpt_dropdown = gr.Dropdown(
+                choices=[label for label, _ in _TRANSL_VQVAE_CKPT_CHOICES],
+                value=_TRANSL_VQVAE_CKPT_CHOICES[0][0] if _TRANSL_VQVAE_CKPT_CHOICES else None,
+                label="Translation VQ-VAE checkpoint",
+                info="Pretrained or experiments/transl_vqvae*/ckpt/*.pt",
+            )
+
         with gr.Tabs():
             with gr.Tab("Ground truth"):
                 gt_vis_btn = gr.Button("Visualize", variant="secondary")
@@ -669,7 +778,7 @@ def build_ui():
             with gr.Tab("VQ-VAE Reconstruction"):
                 gr.Markdown(
                     "Encode the selected sample through **pose VQ-VAE** and **translation VQ-VAE** (tokenize → detokenize), same as at inference. "
-                    "Both body and relative translation (follower − leader root) are reconstructed from tokens. "
+                    "Uses the **Motion** and **Translation VQ-VAE** checkpoints selected above. "
                     "Chart below: ground truth vs reconstructed relation (X, Y, Z over time)."
                 )
                 with gr.Accordion("VQ-VAE model details", open=True):
@@ -687,12 +796,12 @@ def build_ui():
                     vqvae_tokens = gr.Markdown(value="Run **Reconstruct** to see the discrete tokens (leader pose, follower pose, translation) extracted for this sample.", label="Tokens")
                 vqvae_btn.click(
                     fn=visualize_vqvae_reconstruction,
-                    inputs=[sample_dropdown],
+                    inputs=[sample_dropdown, motion_ckpt_dropdown, transl_ckpt_dropdown],
                     outputs=[vqvae_video, vqvae_overlay_video, vqvae_audio, vqvae_plot, vqvae_tokens, vqvae_status],
                 )
 
             with gr.Tab("Inference"):
-                gr.Markdown("Runs **Follower GPT** and **Follower GPT w. RL** (README §1) for the selected sample. First row: generated only. Second row: GT (shadow) vs generated (solid).")
+                gr.Markdown("Runs **Follower GPT** and **Follower GPT w. RL** (README §1) for the selected sample. Uses the **Motion** and **Translation VQ-VAE** checkpoints selected above. First row: generated only. Second row: GT (shadow) vs generated (solid).")
                 inf_btn = gr.Button("Run inference (GPT + RL)", variant="secondary")
                 inf_status = gr.Textbox(label="Status", interactive=False)
                 with gr.Row():
@@ -704,7 +813,7 @@ def build_ui():
                 inf_audio = gr.Audio(label="Song", type="filepath")
                 inf_btn.click(
                     fn=run_inference,
-                    inputs=[sample_dropdown],
+                    inputs=[sample_dropdown, motion_ckpt_dropdown, transl_ckpt_dropdown],
                     outputs=[inf_video_gpt, inf_video_rl, inf_overlay_gpt, inf_overlay_rl, inf_audio, inf_status],
                 )
 
