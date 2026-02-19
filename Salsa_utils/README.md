@@ -129,4 +129,30 @@ python main_gpt2t.py --config configs/follower_gpt_beta0.9_final_salsa.yaml --tr
 - **Output:** Checkpoints under `experiments/follower_gpt_salsa/ckpt/` (e.g. `epoch_10.pt`, `epoch_20.pt`). Default 250 epochs; `save_per_epochs: 10`, `test_freq: 500`. Use the app’s **Inference** tab with your trained motion and translation VQ-VAEs; the app still loads the pretrained Follower GPT by default—to use your trained GPT you would need to add a GPT checkpoint selector or replace the pretrained GPT checkpoint path.
 - **Note:** If you have a single GPU, lower `batch_size` in the config (e.g. from 256 to 64 or 32) to avoid OOM.
 
+### Solar cluster (8 GPUs)
+
+For Step 3 (Follower GPT) on Solar with 8 GPUs, use **sbatch** (recommended) or the interactive **srun_gpt2t.sh** script.
+
+**Option A — sbatch (recommended)**  
+Submit the job; the script changes into the Duolando directory automatically, so you can submit from the project root or from `Baselines/Salsa_Duolando`:
+
+1. From project root:  
+   `cd /path/to/New_2025 && cd Baselines/Salsa_Duolando && sbatch run_follower_gpt_salsa_8gpu.slurm`  
+   Or from Duolando:  
+   `cd Baselines/Salsa_Duolando && sbatch run_follower_gpt_salsa_8gpu.slurm`
+2. Set `#SBATCH --account=<your-lab-account>` in `run_follower_gpt_salsa_8gpu.slurm` (e.g. `3dlg-hcvc-lab` for 3DLG/HCVC lab; use your lab’s account if different).
+3. Ensure conda path and env name in the script match your setup (`duet`).
+4. Monitor: `squeue -u $USER`; cancel: `scancel <job_id>`; logs: `tail -f log/gpt_salsa_<job_id>.out`.
+
+**Option B — srun_gpt2t.sh (interactive / same resources)**  
+From `Baselines/Salsa_Duolando`, run:
+
+```bash
+./srun_gpt2t.sh configs/follower_gpt_beta0.9_final_salsa.yaml train 3dlg-hcvc-lab-long 8
+```
+
+This uses `srun` with the same resources (8 GPUs, 128G, 3 days). Prefer sbatch for long runs so the job is queued and survives disconnects.
+
+**Difference from srun_gpt2t.sh:** The SBATCH script encodes partition, account, GPUs, memory, and time in `#SBATCH` and runs the same `srun python -u main_gpt2t.py --config ... --train` inside the allocation. No need to pass partition/gpunum on the command line.
+
 Further steps (Follower GPT + RL) will be added here once validated.

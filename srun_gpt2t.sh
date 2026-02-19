@@ -4,20 +4,21 @@ if [ ! -d log ]; then
     mkdir log
 fi
 
-echo "[Usage] ./srun.sh config_path [train|eval] partition gpunum"
+echo "[Usage] ./srun_gpt2t.sh config_path [train|eval|demo|visgt|anl|sample] partition gpunum"
 # check config exists
-if [ ! -e $1 ]
-then
-    echo "[ERROR] configuration file: $1 does not exists!"
-    exit
+if [ ! -e "$1" ]; then
+    echo "[ERROR] configuration file: $1 does not exist!"
+    exit 1
 fi
 
-
-if [ ! -d ${expname} ]; then
-    mkdir ${expname}
+# expname/config_suffix: derive from config path for mkdir and job name (fixes empty variables)
+config_basename=$(basename "$1" .yaml)
+config_suffix="gpt_${config_basename}"
+expname="experiments"
+if [ ! -d "$expname" ]; then
+    mkdir "$expname"
 fi
-
-echo "[INFO] saving results to, or loading files from: "$expname
+echo "[INFO] saving results to, or loading files from: $expname"
 
 if [ "$3" == "" ]; then
     echo "[ERROR] enter partition name"
@@ -36,7 +37,8 @@ echo "[INFO] GPU num: $gpunum"
 ((ntask=$gpunum*3))
 
 
-TOOLS="srun --mpi=pmi2  --partition=$partition_name --gres=gpu:$gpunum --cpus-per-task=40  --ntasks-per-node 1  -n1 --job-name=${config_suffix}"
+# Solar: specify --mem and --time (guideline: always specify memory). Add --account if required (e.g. --account=3dlg-hcvc-lab).
+TOOLS="srun --partition=$partition_name --gres=gpu:$gpunum --cpus-per-task=32 --ntasks-per-node=1 -n1 --job-name=$config_suffix --mem=128G --time=3-00:00"
 PYTHONCMD="python -u main_gpt2t.py --config $1"
 
 if [ $2 == "train" ];
