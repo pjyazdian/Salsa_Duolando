@@ -8,7 +8,7 @@
 #SBATCH -J rl_salsa
 
 #SBATCH --account=mars-lab
-#SBATCH --partition=3dlg-hcvc-lab-long
+
 #SBATCH --gres=gpu:8
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32

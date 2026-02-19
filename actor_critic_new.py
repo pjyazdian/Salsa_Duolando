@@ -1981,7 +1981,8 @@ class AC():
                 # collate_fn=paired_collate_fn,
             )
         else:
-            print('WULAAA!')
+            # No data.demo in config (e.g. Salsa RL): use test set for demo/validation generation
+            self.demo_loader = self.test_loader
     def _build_rl_loader(self, sample_sequences):
 
         data = self.config.data.rl
