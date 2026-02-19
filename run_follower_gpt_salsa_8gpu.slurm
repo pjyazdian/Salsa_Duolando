@@ -8,7 +8,7 @@
 
 #SBATCH -J gpt_salsa
 #SBATCH --partition=3dlg-hcvc-lab-long
-#SBATCH --account=3dlg-hcvc-lab
+#SBATCH --account=mars-lab
 #SBATCH --gres=gpu:8
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
@@ -28,15 +28,8 @@ mkdir -p log
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Conda: adjust path and env name if needed
-if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
-    source "$HOME/miniconda3/etc/profile.d/conda.sh"
-elif [ -f "$HOME/conda/miniconda3/etc/profile.d/conda.sh" ]; then
-    source "$HOME/conda/miniconda3/etc/profile.d/conda.sh"
-else
-    echo "[ERROR] conda not found; adjust source path in this script"
-    exit 1
-fi
+# Conda (mars-lab / Payam)
+source /project/rosie-lab/Payam/conda/miniconda3/etc/profile.d/conda.sh
 conda activate duet
 
 CONFIG="configs/follower_gpt_beta0.9_final_salsa.yaml"
