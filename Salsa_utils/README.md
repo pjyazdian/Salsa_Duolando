@@ -75,7 +75,7 @@ For the data contract, conversion details, and windowing options, see **SALSA_DU
 
 Train Duolando models from scratch on the Salsa cache. **Prerequisite:** build the Salsa cache for both train and test splits (see above). Run all commands from the **Salsa_Duolando** repo root (`Baselines/Salsa_Duolando`).
 
-Optional: install Weights & Biases for logging (`pip install wandb`). If available, the motion VQ-VAE, translation VQ-VAE, and Follower GPT training scripts log loss, learning rate, and checkpoint events to wandb (projects: `duolando-motion-vqvae`, `duolando-transl-vqvae`, `duolando-follower-gpt`; run name from config `expname`).
+Optional: install Weights & Biases for logging (`pip install wandb`). If available, the motion VQ-VAE, translation VQ-VAE, Follower GPT, and RL training scripts log to wandb (projects: `duolando-motion-vqvae`, `duolando-transl-vqvae`, `duolando-follower-gpt`, `duolando-rl`; run name from config `expname`).
 
 ### Step 1: Motion VQ-VAE
 
@@ -155,4 +155,28 @@ This uses `srun` with the same resources (8 GPUs, 128G, 3 days). Prefer sbatch f
 
 **Difference from srun_gpt2t.sh:** The SBATCH script encodes partition, account, GPUs, memory, and time in `#SBATCH` and runs the same `srun python -u main_gpt2t.py --config ... --train` inside the allocation. No need to pass partition/gpunum on the command line.
 
-Further steps (Follower GPT + RL) will be added here once validated.
+### Step 4: Follower GPT w. RL (reinforcement learning)
+
+Train the **RL** agent (actor-critic) on Salsa, starting from your trained Follower GPT. Uses the same Salsa cache and your **motion** and **translation** VQ-VAEs (frozen). Requires Steps 1, 2, and 3; the config loads a trained Follower GPT checkpoint as `init_weight`.
+
+**Command (local / single node):**
+
+```bash
+cd Baselines/Salsa_Duolando
+
+python main_ac_new.py --config configs/rl_final_debug_reward3_random_5mem_lr3e-5_salsa.yaml --train
+```
+
+- **Config:** `configs/rl_final_debug_reward3_random_5mem_lr3e-5_salsa.yaml` — Salsa data roots, `vqvae_weight` and `transl_vqvae_weight` point to `./experiments/motion_vqvae_salsa/ckpt/` and `./experiments/transl_vqvae_salsa/ckpt/` (e.g. `epoch_500.pt`), `init_weight` points to `./experiments/follower_gpt_salsa/ckpt/epoch_500.pt`, `expname`: `rl_salsa`, `testing.music_source`: Salsa mp3 test.
+- **Checkpoints:** If your motion/translation VQ-VAEs or Follower GPT use different epoch numbers, edit the config: `vqvae_weight`, `transl_vqvae_weight`, and `init_weight` to your checkpoint paths.
+- **Output:** Checkpoints under `experiments/rl_salsa/ckpt/` (e.g. `epoch_10.pt`, `epoch_50.pt`). Default 500 epochs; `save_per_epochs: 10`, `test_freq: 10`. Wandb project: `duolando-rl` (if `wandb` is installed and API key set).
+- **Single GPU:** Lower `data.rl.batch_size` or `data.train.batch_size` in the config if needed.
+
+**Solar cluster (8 GPUs):** Submit from `Baselines/Salsa_Duolando`:
+
+```bash
+cd Baselines/Salsa_Duolando
+sbatch run_rl_salsa_8gpu.slurm
+```
+
+Same as Step 3: set `#SBATCH --account` and conda path in `run_rl_salsa_8gpu.slurm` if needed. Logs: `log/rl_salsa_<job_id>.out` / `.err`.

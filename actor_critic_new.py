@@ -33,6 +33,11 @@ import matplotlib.pyplot as plt
 
 from scipy.spatial.transform import Rotation as R
 
+try:
+    import wandb
+except ImportError:
+    wandb = None
+
 def eye(n, batch_shape):
     iden = np.zeros(np.concatenate([batch_shape, [n, n]]))
     iden[..., 0, 0] = 1.0
@@ -103,13 +108,31 @@ class AC():
         # optimizer_q = self.optimizer_q
         log = Logger(self.config, self.expdir)
         updates = 0
-        
+
+        if wandb is not None:
+            wandb.init(
+                project="duolando-rl",
+                name=config.expname,
+                config={
+                    "expname": config.expname,
+                    "epoch": config.epoch,
+                    "data_root": config.data.train.data_root,
+                    "music_root": config.data.train.music_root,
+                    "vqvae_weight": config.vqvae_weight,
+                    "transl_vqvae_weight": config.transl_vqvae_weight,
+                    "init_weight": getattr(config, "init_weight", None),
+                },
+                reinit=True,
+            )
+            gpt_for_watch = self.model2.module if hasattr(self.model2, "module") else self.model2
+            wandb.watch(gpt_for_watch, log="all", log_freq=100)
+
         checkpoint = torch.load(config.vqvae_weight)
         vqvae.load_state_dict(checkpoint['model'])
         checkpoint = torch.load(config.transl_vqvae_weight)
         transl_vqvae.load_state_dict(checkpoint['model'])
 
-        if hasattr(config, 'init_weight') and config.init_weight is not None and config.init_weight is not '':
+        if hasattr(config, 'init_weight') and config.init_weight is not None and config.init_weight != '':
             print('Use pretrained model!')
             print(config.init_weight)  
             checkpoint = torch.load(config.init_weight)
@@ -494,6 +517,9 @@ class AC():
                     # 'entropy': entropy.clone().detach().mean()
                 }
                 #if epoch_i % self.config.log_per_updates == 0:
+                if wandb is not None:
+                    log_dict = {"train/loss": stats["loss"], "train/reward_down": stats.get("reward_down", 0), "train/reward_tranl": stats.get("reward_tranl", 0), "epoch": epoch_i, "updates": updates}
+                    wandb.log(log_dict, step=updates)
                 log.update(stats)
                 updates += 1
 
@@ -508,6 +534,8 @@ class AC():
             if epoch_i % config.save_per_epochs == 0 or epoch_i == 1:
                 filename = os.path.join(self.ckptdir, f'epoch_{epoch_i}.pt')
                 torch.save(checkpoint, filename)
+                if wandb is not None:
+                    wandb.log({"checkpoint_saved_epoch": epoch_i}, step=updates)
             # Eval
             if epoch_i % config.test_freq == 0:
                 print('validation...')
@@ -737,7 +765,7 @@ class AC():
         checkpoint = torch.load(config.transl_vqvae_weight)
         transl_vqvae.load_state_dict(checkpoint['model'])
 
-        if hasattr(config, 'init_weight') and config.init_weight is not None and config.init_weight is not '':
+        if hasattr(config, 'init_weight') and config.init_weight is not None and config.init_weight != '':
             print('Use pretrained model!')
             print(config.init_weight)  
             checkpoint = torch.load(config.init_weight)
@@ -1120,6 +1148,9 @@ class AC():
                     # 'entropy': entropy.clone().detach().mean()
                 }
                 #if epoch_i % self.config.log_per_updates == 0:
+                if wandb is not None:
+                    log_dict = {"train/loss": stats["loss"], "train/reward_down": stats.get("reward_down", 0), "train/reward_tranl": stats.get("reward_tranl", 0), "epoch": epoch_i, "updates": updates}
+                    wandb.log(log_dict, step=updates)
                 log.update(stats)
                 updates += 1
 
@@ -1134,6 +1165,8 @@ class AC():
             if epoch_i % config.save_per_epochs == 0 or epoch_i == 1:
                 filename = os.path.join(self.ckptdir, f'epoch_{epoch_i}.pt')
                 torch.save(checkpoint, filename)
+                if wandb is not None:
+                    wandb.log({"checkpoint_saved_epoch": epoch_i}, step=updates)
             # Eval
             if epoch_i % config.test_freq == 0:
                 print('validation...')

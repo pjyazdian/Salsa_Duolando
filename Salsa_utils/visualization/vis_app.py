@@ -446,6 +446,24 @@ def _list_transl_vqvae_checkpoints():
 _TRANSL_VQVAE_CKPT_CHOICES = _list_transl_vqvae_checkpoints()
 
 
+def _list_follower_gpt_checkpoints():
+    """List (label, path) for Follower GPT: pretrained (epoch_500) + all .pt in experiments/follower_gpt_salsa/ckpt/."""
+    experiments_dir = os.path.join(_REPO_ROOT, "experiments")
+    choices = []
+    pretrained_path = os.path.join(experiments_dir, "pretrained", "follower_gpt", "ckpt", "epoch_500.pt")
+    if os.path.isfile(pretrained_path):
+        choices.append(("Pretrained (follower_gpt)", pretrained_path))
+    salsa_ckpt_dir = os.path.join(experiments_dir, "follower_gpt_salsa", "ckpt")
+    if os.path.isdir(salsa_ckpt_dir):
+        for f in sorted(os.listdir(salsa_ckpt_dir)):
+            if f.endswith(".pt"):
+                choices.append((f"follower_gpt_salsa / {f}", os.path.join(salsa_ckpt_dir, f)))
+    return choices
+
+
+_GPT_CKPT_CHOICES = _list_follower_gpt_checkpoints()
+
+
 def load_and_index_data(dataset_choice, progress=gr.Progress()):
     """Load dataset (DD100 or Salsa cache) and fill sample list. Returns dropdown choices and status."""
     global _dataset, _sample_names, _use_salsa_dataset
@@ -623,9 +641,9 @@ def _ensure_music_54(music: np.ndarray, n_music: int = 54) -> np.ndarray:
     return music
 
 
-def run_inference(sample_name, motion_ckpt_choice, transl_ckpt_choice, progress=gr.Progress()):
+def run_inference(sample_name, motion_ckpt_choice, transl_ckpt_choice, gpt_ckpt_choice, progress=gr.Progress()):
     """Run both Follower GPT and Follower GPT w. RL on the selected sample; return both videos + overlay videos + audio.
-    Uses the selected Motion VQ-VAE and Translation VQ-VAE checkpoints for both GPT and RL agents.
+    Uses the selected Motion VQ-VAE, Translation VQ-VAE, and Follower GPT checkpoints for the GPT agent.
     """
     if _dataset is None:
         return None, None, None, None, None, "Load and index data first."
@@ -633,13 +651,18 @@ def run_inference(sample_name, motion_ckpt_choice, transl_ckpt_choice, progress=
         return None, None, None, None, None, "Please select a sample from the dropdown."
     if not motion_ckpt_choice or not transl_ckpt_choice:
         return None, None, None, None, None, "Please select both Motion VQ-VAE and Translation VQ-VAE checkpoints."
+    if not gpt_ckpt_choice:
+        return None, None, None, None, None, "Please select a Follower GPT checkpoint."
     try:
         motion_path = next((p for label, p in _VQVAE_CKPT_CHOICES if label == motion_ckpt_choice), None)
         transl_path = next((p for label, p in _TRANSL_VQVAE_CKPT_CHOICES if label == transl_ckpt_choice), None)
+        gpt_path = next((p for label, p in _GPT_CKPT_CHOICES if label == gpt_ckpt_choice), None)
         if not motion_path or not os.path.isfile(motion_path):
             return None, None, None, None, None, f"Checkpoint not found: {motion_ckpt_choice}"
         if not transl_path or not os.path.isfile(transl_path):
             return None, None, None, None, None, f"Checkpoint not found: {transl_ckpt_choice}"
+        if not gpt_path or not os.path.isfile(gpt_path):
+            return None, None, None, None, None, f"Checkpoint not found: {gpt_ckpt_choice}"
         idx = _sample_names.index(sample_name)
         progress(0.05, desc="Loading sample...")
         item = _dataset[idx]
@@ -655,7 +678,7 @@ def run_inference(sample_name, motion_ckpt_choice, transl_ckpt_choice, progress=
             "fname": [sample_name],
         }
 
-        # 1) Follower GPT
+        # 1) Follower GPT (uses selected GPT checkpoint)
         progress(0.15, desc="Loading Follower GPT...")
         agent_gpt = _get_agent()
         progress(0.2, desc="Loading motion & translation VQ-VAEs...")
@@ -665,6 +688,10 @@ def run_inference(sample_name, motion_ckpt_choice, transl_ckpt_choice, progress=
         ckpt_t = torch.load(transl_path, map_location="cpu")
         agent_gpt.model3.load_state_dict(ckpt_t["model"], strict=True)
         agent_gpt.model3.eval()
+        progress(0.28, desc="Loading Follower GPT checkpoint...")
+        checkpoint_gpt = torch.load(gpt_path, map_location="cpu")
+        agent_gpt.model2.load_state_dict(checkpoint_gpt["model"])
+        agent_gpt.model2.eval()
         progress(0.35, desc="Running Follower GPT inference...")
         pose_follower_gpt, pose_leader = _run_single_inference(agent_gpt, batch)
         progress(0.5, desc="Rendering GPT video...")
@@ -801,7 +828,13 @@ def build_ui():
                 )
 
             with gr.Tab("Inference"):
-                gr.Markdown("Runs **Follower GPT** and **Follower GPT w. RL** (README §1) for the selected sample. Uses the **Motion** and **Translation VQ-VAE** checkpoints selected above. First row: generated only. Second row: GT (shadow) vs generated (solid).")
+                gr.Markdown("Runs **Follower GPT** and **Follower GPT w. RL** (README §1) for the selected sample. Uses the **Motion** and **Translation VQ-VAE** checkpoints from the accordion above, and the **Follower GPT** checkpoint below for the GPT model. First row: generated only. Second row: GT (shadow) vs generated (solid).")
+                gpt_ckpt_dropdown = gr.Dropdown(
+                    choices=[label for label, _ in _GPT_CKPT_CHOICES],
+                    value=_GPT_CKPT_CHOICES[0][0] if _GPT_CKPT_CHOICES else None,
+                    label="Follower GPT checkpoint",
+                    info="Pretrained or experiments/follower_gpt_salsa/ckpt/*.pt",
+                )
                 inf_btn = gr.Button("Run inference (GPT + RL)", variant="secondary")
                 inf_status = gr.Textbox(label="Status", interactive=False)
                 with gr.Row():
@@ -813,7 +846,7 @@ def build_ui():
                 inf_audio = gr.Audio(label="Song", type="filepath")
                 inf_btn.click(
                     fn=run_inference,
-                    inputs=[sample_dropdown, motion_ckpt_dropdown, transl_ckpt_dropdown],
+                    inputs=[sample_dropdown, motion_ckpt_dropdown, transl_ckpt_dropdown, gpt_ckpt_dropdown],
                     outputs=[inf_video_gpt, inf_video_rl, inf_overlay_gpt, inf_overlay_rl, inf_audio, inf_status],
                 )
 
