@@ -33,6 +33,12 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation as R
 
+try:
+    import wandb
+except ImportError:
+    wandb = None
+
+
 def eye(n, batch_shape):
     iden = np.zeros(np.concatenate([batch_shape, [n, n]]))
     iden[..., 0, 0] = 1.0
@@ -94,7 +100,27 @@ class MCTall():
         optimizer = self.optimizer
         log = Logger(self.config, self.expdir)
         updates = 0
-        
+
+        if wandb is not None:
+            wandb.init(
+                project="duolando-follower-gpt",
+                name=config.expname,
+                config={
+                    "expname": config.expname,
+                    "epoch": config.epoch,
+                    "data_root": config.data.train.data_root,
+                    "music_root": config.data.train.music_root,
+                    "batch_size": config.data.train.batch_size,
+                    "interval": config.data.train.interval,
+                    "move": config.data.train.move,
+                    "vqvae_weight": config.vqvae_weight,
+                    "transl_vqvae_weight": config.transl_vqvae_weight,
+                },
+                reinit=True,
+            )
+            model_to_watch = gpt.module if hasattr(gpt, "module") else gpt
+            wandb.watch(model_to_watch, log="all", log_freq=100)
+
         checkpoint = torch.load(config.vqvae_weight)
         vqvae.load_state_dict(checkpoint['model'])
         checkpoint_tranl = torch.load(config.transl_vqvae_weight)
@@ -158,6 +184,13 @@ class MCTall():
                     'updates': updates,
                     'loss': loss.mean().item()
                 }
+                if wandb is not None:
+                    log_dict = {"train/loss": stats["loss"], "epoch": epoch_i, "updates": updates}
+                    try:
+                        log_dict["train/lr"] = optimizer.param_groups[0]["lr"]
+                    except Exception:
+                        pass
+                    wandb.log(log_dict, step=updates)
                 log.update(stats)
                 updates += 1
 
@@ -171,6 +204,8 @@ class MCTall():
             if epoch_i % config.save_per_epochs == 0 or epoch_i == 1:
                 filename = os.path.join(self.ckptdir, f'epoch_{epoch_i}.pt')
                 torch.save(checkpoint, filename)
+                if wandb is not None:
+                    wandb.log({"checkpoint_saved_epoch": epoch_i}, step=updates)
             # Eval
             if epoch_i % config.test_freq == 0:
                 with torch.no_grad():

@@ -75,7 +75,7 @@ For the data contract, conversion details, and windowing options, see **SALSA_DU
 
 Train Duolando models from scratch on the Salsa cache. **Prerequisite:** build the Salsa cache for both train and test splits (see above). Run all commands from the **Salsa_Duolando** repo root (`Baselines/Salsa_Duolando`).
 
-Optional: install Weights & Biases for logging (`pip install wandb`). If available, the motion and translation VQ-VAE training scripts log loss, learning rate, and checkpoint events to wandb (projects: `duolando-motion-vqvae`, `duolando-transl-vqvae`; run name from config `expname`).
+Optional: install Weights & Biases for logging (`pip install wandb`). If available, the motion VQ-VAE, translation VQ-VAE, and Follower GPT training scripts log loss, learning rate, and checkpoint events to wandb (projects: `duolando-motion-vqvae`, `duolando-transl-vqvae`, `duolando-follower-gpt`; run name from config `expname`).
 
 ### Step 1: Motion VQ-VAE
 
@@ -107,4 +107,26 @@ python main_transl.py --config configs/transl_vqvaex_final_salsa.yaml --train
 - **Config:** `configs/transl_vqvaex_final_salsa.yaml` — same as `transl_vqvaex_final.yaml` except `music_root` and `data_root` point to `./data/salsa_duolando/music` and `./data/salsa_duolando/motion`, and `expname` is `transl_vqvae_salsa`.
 - **Output:** Checkpoints under `experiments/transl_vqvae_salsa/ckpt/` (e.g. `epoch_20.pt`, `epoch_40.pt`). Default 500 epochs; `save_per_epochs: 20`, `test_freq: 500`.
 
-Further steps (Follower GPT, Follower GPT + RL) will be added here once validated.
+### Step 3: Follower GPT
+
+Train the **Follower GPT** (music-conditioned follower motion generation). Uses the Salsa cache and your trained **motion** and **translation** VQ-VAEs from Steps 1 and 2 (they are loaded frozen). Requires Steps 1 and 2 to be done; use checkpoints from those steps (e.g. `epoch_500.pt` or your latest, e.g. `epoch_20.pt`).
+
+**Command:**
+
+```bash
+cd Baselines/Salsa_Duolando
+
+python main_gpt2t.py --config configs/follower_gpt_beta0.9_final_salsa.yaml --train
+```
+
+- **Config:** `configs/follower_gpt_beta0.9_final_salsa.yaml` — same as `follower_gpt_beta0.9_final.yaml` except:
+  - `data.train` / `data.test`: `music_root` and `data_root` → `./data/salsa_duolando/music` and `./data/salsa_duolando/motion`
+  - `testing.music_source` → `./data/salsa_duolando/music/mp3/test/`
+  - `vqvae_weight` → `./experiments/motion_vqvae_salsa/ckpt/epoch_500.pt`
+  - `transl_vqvae_weight` → `./experiments/transl_vqvae_salsa/ckpt/epoch_500.pt`
+  - `expname` → `follower_gpt_salsa`
+- **VQ-VAE checkpoints:** If you have not trained motion/translation VQ-VAEs to epoch 500, edit the config and set `vqvae_weight` and `transl_vqvae_weight` to your latest checkpoint paths (e.g. `epoch_20.pt`, `epoch_40.pt`).
+- **Output:** Checkpoints under `experiments/follower_gpt_salsa/ckpt/` (e.g. `epoch_10.pt`, `epoch_20.pt`). Default 250 epochs; `save_per_epochs: 10`, `test_freq: 500`. Use the app’s **Inference** tab with your trained motion and translation VQ-VAEs; the app still loads the pretrained Follower GPT by default—to use your trained GPT you would need to add a GPT checkpoint selector or replace the pretrained GPT checkpoint path.
+- **Note:** If you have a single GPU, lower `batch_size` in the config (e.g. from 256 to 64 or 32) to avoid OOM.
+
+Further steps (Follower GPT + RL) will be added here once validated.
