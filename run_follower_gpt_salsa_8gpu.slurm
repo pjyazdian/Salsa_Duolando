@@ -37,9 +37,12 @@ fi
 source /project/rosie-lab/Payam/conda/miniconda3/etc/profile.d/conda.sh
 conda activate duet
 
-# Wandb: set API key so training can log. Create once on the cluster:
-#   echo 'YOUR_WANDB_KEY' > ~/.wandb_api_key && chmod 600 ~/.wandb_api_key
-[ -f "$HOME/.wandb_api_key" ] && export WANDB_API_KEY=$(cat "$HOME/.wandb_api_key")
+# Wandb: use key from project (shared across nodes). Home is per-node on Solar so $HOME/.wandb_api_key is not visible on compute nodes.
+# Create once: echo 'YOUR_WANDB_KEY' > /project/rosie-lab/Payam/.wandb_api_key && chmod 600 /project/rosie-lab/Payam/.wandb_api_key
+WANDB_KEY_FILE="/project/rosie-lab/Payam/.wandb_api_key"
+if [ -f "$WANDB_KEY_FILE" ]; then
+  export WANDB_API_KEY=$(cat "$WANDB_KEY_FILE")
+fi
 
 CONFIG="configs/follower_gpt_beta0.9_final_salsa.yaml"
 echo "[INFO] CWD: $(pwd)"
