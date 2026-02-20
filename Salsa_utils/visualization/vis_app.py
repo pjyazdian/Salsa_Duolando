@@ -464,6 +464,24 @@ def _list_follower_gpt_checkpoints():
 _GPT_CKPT_CHOICES = _list_follower_gpt_checkpoints()
 
 
+def _list_rl_checkpoints():
+    """List (label, path) for Follower GPT w. RL: pretrained (epoch_50) + all .pt in experiments/rl_salsa/ckpt/."""
+    experiments_dir = os.path.join(_REPO_ROOT, "experiments")
+    choices = []
+    pretrained_path = os.path.join(experiments_dir, "pretrained", "rl", "ckpt", "epoch_50.pt")
+    if os.path.isfile(pretrained_path):
+        choices.append(("Pretrained (rl)", pretrained_path))
+    salsa_ckpt_dir = os.path.join(experiments_dir, "rl_salsa", "ckpt")
+    if os.path.isdir(salsa_ckpt_dir):
+        for f in sorted(os.listdir(salsa_ckpt_dir)):
+            if f.endswith(".pt"):
+                choices.append((f"rl_salsa / {f}", os.path.join(salsa_ckpt_dir, f)))
+    return choices
+
+
+_RL_CKPT_CHOICES = _list_rl_checkpoints()
+
+
 def load_and_index_data(dataset_choice, progress=gr.Progress()):
     """Load dataset (DD100 or Salsa cache) and fill sample list. Returns dropdown choices and status."""
     global _dataset, _sample_names, _use_salsa_dataset
@@ -641,9 +659,9 @@ def _ensure_music_54(music: np.ndarray, n_music: int = 54) -> np.ndarray:
     return music
 
 
-def run_inference(sample_name, motion_ckpt_choice, transl_ckpt_choice, gpt_ckpt_choice, progress=gr.Progress()):
+def run_inference(sample_name, motion_ckpt_choice, transl_ckpt_choice, gpt_ckpt_choice, rl_ckpt_choice, progress=gr.Progress()):
     """Run both Follower GPT and Follower GPT w. RL on the selected sample; return both videos + overlay videos + audio.
-    Uses the selected Motion VQ-VAE, Translation VQ-VAE, and Follower GPT checkpoints for the GPT agent.
+    Uses the selected Motion VQ-VAE, Translation VQ-VAE, Follower GPT, and RL checkpoints.
     """
     if _dataset is None:
         return None, None, None, None, None, "Load and index data first."
@@ -653,16 +671,21 @@ def run_inference(sample_name, motion_ckpt_choice, transl_ckpt_choice, gpt_ckpt_
         return None, None, None, None, None, "Please select both Motion VQ-VAE and Translation VQ-VAE checkpoints."
     if not gpt_ckpt_choice:
         return None, None, None, None, None, "Please select a Follower GPT checkpoint."
+    if not rl_ckpt_choice:
+        return None, None, None, None, None, "Please select a Follower GPT w. RL checkpoint."
     try:
         motion_path = next((p for label, p in _VQVAE_CKPT_CHOICES if label == motion_ckpt_choice), None)
         transl_path = next((p for label, p in _TRANSL_VQVAE_CKPT_CHOICES if label == transl_ckpt_choice), None)
         gpt_path = next((p for label, p in _GPT_CKPT_CHOICES if label == gpt_ckpt_choice), None)
+        rl_path = next((p for label, p in _RL_CKPT_CHOICES if label == rl_ckpt_choice), None)
         if not motion_path or not os.path.isfile(motion_path):
             return None, None, None, None, None, f"Checkpoint not found: {motion_ckpt_choice}"
         if not transl_path or not os.path.isfile(transl_path):
             return None, None, None, None, None, f"Checkpoint not found: {transl_ckpt_choice}"
         if not gpt_path or not os.path.isfile(gpt_path):
             return None, None, None, None, None, f"Checkpoint not found: {gpt_ckpt_choice}"
+        if not rl_path or not os.path.isfile(rl_path):
+            return None, None, None, None, None, f"Checkpoint not found: {rl_ckpt_choice}"
         idx = _sample_names.index(sample_name)
         progress(0.05, desc="Loading sample...")
         item = _dataset[idx]
@@ -711,7 +734,7 @@ def run_inference(sample_name, motion_ckpt_choice, transl_ckpt_choice, gpt_ckpt_
             output_path=os.path.join(tempfile.gettempdir(), f"duolando_gpt_gt_vs_{sample_name.replace('/', '_')}.mp4"),
         )
 
-        # 2) Follower GPT w. RL
+        # 2) Follower GPT w. RL (uses selected RL checkpoint)
         progress(0.65, desc="Loading Follower GPT w. RL...")
         agent_rl = _get_agent_rl()
         progress(0.7, desc="Loading motion & translation VQ-VAEs...")
@@ -719,6 +742,10 @@ def run_inference(sample_name, motion_ckpt_choice, transl_ckpt_choice, gpt_ckpt_
         agent_rl.model.eval()
         agent_rl.model3.load_state_dict(ckpt_t["model"], strict=True)
         agent_rl.model3.eval()
+        progress(0.75, desc="Loading RL checkpoint...")
+        checkpoint_rl = torch.load(rl_path, map_location="cpu")
+        agent_rl.model2.load_state_dict(checkpoint_rl["model"])
+        agent_rl.model2.eval()
         progress(0.78, desc="Running RL inference...")
         pose_follower_rl, _ = _run_single_inference(agent_rl, batch)
         progress(0.88, desc="Rendering RL video...")
@@ -828,12 +855,18 @@ def build_ui():
                 )
 
             with gr.Tab("Inference"):
-                gr.Markdown("Runs **Follower GPT** and **Follower GPT w. RL** (README §1) for the selected sample. Uses the **Motion** and **Translation VQ-VAE** checkpoints from the accordion above, and the **Follower GPT** checkpoint below for the GPT model. First row: generated only. Second row: GT (shadow) vs generated (solid).")
+                gr.Markdown("Runs **Follower GPT** and **Follower GPT w. RL** for the selected sample. Use the **Motion** and **Translation VQ-VAE** checkpoints from the accordion above, and the **Follower GPT** and **Follower GPT w. RL** checkpoints below. First row: generated only. Second row: GT (shadow) vs generated (solid).")
                 gpt_ckpt_dropdown = gr.Dropdown(
                     choices=[label for label, _ in _GPT_CKPT_CHOICES],
                     value=_GPT_CKPT_CHOICES[0][0] if _GPT_CKPT_CHOICES else None,
                     label="Follower GPT checkpoint",
                     info="Pretrained or experiments/follower_gpt_salsa/ckpt/*.pt",
+                )
+                rl_ckpt_dropdown = gr.Dropdown(
+                    choices=[label for label, _ in _RL_CKPT_CHOICES],
+                    value=_RL_CKPT_CHOICES[0][0] if _RL_CKPT_CHOICES else None,
+                    label="Follower GPT w. RL checkpoint",
+                    info="Pretrained or experiments/rl_salsa/ckpt/*.pt",
                 )
                 inf_btn = gr.Button("Run inference (GPT + RL)", variant="secondary")
                 inf_status = gr.Textbox(label="Status", interactive=False)
@@ -846,7 +879,7 @@ def build_ui():
                 inf_audio = gr.Audio(label="Song", type="filepath")
                 inf_btn.click(
                     fn=run_inference,
-                    inputs=[sample_dropdown, motion_ckpt_dropdown, transl_ckpt_dropdown, gpt_ckpt_dropdown],
+                    inputs=[sample_dropdown, motion_ckpt_dropdown, transl_ckpt_dropdown, gpt_ckpt_dropdown, rl_ckpt_dropdown],
                     outputs=[inf_video_gpt, inf_video_rl, inf_overlay_gpt, inf_overlay_rl, inf_audio, inf_status],
                 )
 
